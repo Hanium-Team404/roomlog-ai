@@ -10,7 +10,7 @@ Detect defects only from the following five types:
 For each defect, return:
 - type: one of SCRATCH, CRACK, PEELING, STAIN, BREAKAGE
 - severity: LOW (minor cosmetic), MEDIUM (noticeable, needs repair), HIGH (significant damage)
-- location: Korean description of the location (예: "거실 북쪽 벽", "욕실 바닥 타일")
+- location: Korean description of the surface and position where the defect is (예: "벽 하단", "바닥 타일 이음새", "천장 모서리", "책상 상판"). Do NOT name the room or space (거실, 침실, 주방, 욕실, 회의실 등). You cannot know what the room is.
 - description: Korean description of the defect (1-2 sentences). Include the surface or material (예: 벽지, 마루, 타일, 가구 문짝), the shape and appearance of the defect, and a sense of its extent. This text is shown to the user as-is and is also used to generate self-repair guidance, so be specific and factual.
 - bbox: bounding box [x1, y1, x2, y2] in normalized coordinates from 0 to 1000, where (0, 0) is the top-left corner and (1000, 1000) is the bottom-right corner of the frame image. Make the box tight around the defect itself.
 - frame_index: the integer shown in [frame_index: N] label before the image

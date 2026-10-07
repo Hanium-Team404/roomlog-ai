@@ -76,6 +76,36 @@ def upload_to_s3(data: bytes, key: str) -> str:
     return f"https://{settings.s3_bucket_name}.s3.{settings.s3_region}.amazonaws.com/{key}"
 
 
+def s3_url_prefix() -> str:
+    from app.core.config import settings
+
+    return f"https://{settings.s3_bucket_name}.s3.{settings.s3_region}.amazonaws.com/"
+
+
+def delete_from_s3(keys: list[str]) -> int:
+    """없는 키는 S3가 에러 없이 무시한다. 삭제 요청한 키 수를 반환."""
+    from app.core.config import settings
+
+    s3 = _get_s3()
+    for i in range(0, len(keys), 1000):
+        chunk = keys[i:i + 1000]
+        s3.delete_objects(
+            Bucket=settings.s3_bucket_name,
+            Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+        )
+    return len(keys)
+
+
+def delete_prefix_from_s3(prefix: str) -> int:
+    from app.core.config import settings
+
+    s3 = _get_s3()
+    keys: list[str] = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=settings.s3_bucket_name, Prefix=prefix):
+        keys.extend(obj["Key"] for obj in page.get("Contents", []))
+    return delete_from_s3(keys) if keys else 0
+
+
 def upload_file_to_s3(path: Path, key: str) -> str:
     """파일을 RAM에 올리지 않고 디스크에서 직접 스트리밍 업로드."""
     from app.core.config import settings

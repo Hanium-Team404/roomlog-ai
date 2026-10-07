@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger("app")
@@ -33,6 +34,9 @@ _MIN_CONFIDENCE = 0.5
 _MATCH_THRESHOLD_M = 0.3
 _DUP_MAX_TRANS_M = 0.15  # 중복 시점 스킵: 이동 15cm 미만
 _DUP_MAX_ROT_DEG = 15.0  # 중복 시점 스킵: 회전 15도 미만
+_MIN_SIDE_M = 0.005  # 짧은 변 5mm 미만 하자 제외
+_SAM3_RETRIES = 2
+_LOG_DIR = Path(__file__).parent.parent.parent / "logs"
 
 _DETECTION_SCHEMA = {
     "type": "json_schema",
@@ -309,7 +313,7 @@ def _sam3_segment(image_bytes: bytes, bbox: list[float]) -> np.ndarray | None:
         mask_arr = mask_arr[:, :, 3] if mask_arr.shape[2] == 4 else cv2.cvtColor(mask_arr, cv2.COLOR_BGR2GRAY)
 
     _, binary = cv2.threshold(mask_arr, 127, 255, cv2.THRESH_BINARY)
-    return binary
+    return binary if np.any(binary) else None
 
 
 def _mask_to_polygon(mask: np.ndarray) -> list[tuple[float, float]]:
@@ -322,16 +326,33 @@ def _mask_to_polygon(mask: np.ndarray) -> list[tuple[float, float]]:
     return [(float(p[0][0]), float(p[0][1])) for p in approx]
 
 
-def _mask_area_m2(mask: np.ndarray, depth_map: np.ndarray, K_depth: np.ndarray) -> float:
+def _mask_depth_median(mask: np.ndarray, depth_map: np.ndarray) -> tuple[float | None, bool]:
+    """마스크 영역의 유효 depth 중앙값. 영역에 depth가 없으면 프레임 전체로 어림(estimated=True)."""
     depth_h, depth_w = depth_map.shape
-    mask_d = cv2.resize(mask, (depth_w, depth_h), interpolation=cv2.INTER_NEAREST)
-    sel = (mask_d > 0) & (depth_map > 0)
-    if not np.any(sel):
-        return 0.0
-    return float(np.sum(depth_map[sel] ** 2) / (K_depth[0, 0] * K_depth[1, 1]))
+    # INTER_AREA: 가는 마스크도 축소 후 0이 되지 않도록 부분 커버 픽셀을 남긴다
+    mask_d = cv2.resize(mask, (depth_w, depth_h), interpolation=cv2.INTER_AREA)
+    valid = depth_map[(mask_d > 0) & (depth_map > 0)]
+    if valid.size > 0:
+        return float(np.median(valid)), False
+    valid = depth_map[depth_map > 0]
+    if valid.size > 0:
+        return float(np.median(valid)), True
+    return None, True
 
 
-# iOS 3D 뷰어의 하자 영역 표시와 동일한 systemBlue #007AFF (BGR), 채움 알파 0.15
+def _mask_area_cm2(mask: np.ndarray, depth: float, K: np.ndarray) -> float:
+    """RGB 해상도 마스크 픽셀 수 × 픽셀당 실면적(depth²/(fx·fy))"""
+    n = int(np.count_nonzero(mask))
+    return n * depth ** 2 / (K[0, 0] * K[1, 1]) * 1e4
+
+
+def _mask_short_side_m(mask: np.ndarray, depth: float, K: np.ndarray) -> float:
+    ys, xs = np.nonzero(mask)
+    side_px = min(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1)
+    return float(side_px * depth / min(K[0, 0], K[1, 1]))
+
+
+# iOS 3D 뷰어의 하자 영역 표시와 동일한 systemBlue #007AFF (BGR), 채움/테두리 알파 0.15
 _OVERLAY_COLOR = (255, 122, 0)
 _OVERLAY_ALPHA = 0.15
 
@@ -340,10 +361,33 @@ def _draw_seg_overlay(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
     vis = img.copy()
     colored = img.copy()
     colored[mask > 0] = _OVERLAY_COLOR
-    cv2.addWeighted(colored, _OVERLAY_ALPHA, vis, 1 - _OVERLAY_ALPHA, 0, vis)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(vis, contours, -1, _OVERLAY_COLOR, 2)
+    cv2.drawContours(colored, contours, -1, _OVERLAY_COLOR, 2)
+    cv2.addWeighted(colored, _OVERLAY_ALPHA, vis, 1 - _OVERLAY_ALPHA, 0, vis)
     return vis
+
+
+async def _segment_with_retry(jpeg: bytes, bbox: list[float]) -> np.ndarray | None:
+    for attempt in range(1 + _SAM3_RETRIES):
+        try:
+            mask = await asyncio.to_thread(_sam3_segment, jpeg, bbox)
+        except Exception as e:
+            mask = None
+            logger.warning("[D01] SAM3 호출 예외 (시도 %d/%d): %s", attempt + 1, 1 + _SAM3_RETRIES, e)
+        if mask is not None:
+            return mask
+    return None
+
+
+def _log_dropped(scan_id: int | str, reason: str, d: dict, frame_idx: int, bbox: list[float]) -> None:
+    """콜백에서 제외한 하자를 logs/{scan_id}.log에 기록. 개인정보(위치 설명, URL)는 남기지 않는다."""
+    _LOG_DIR.mkdir(exist_ok=True)
+    line = (
+        f"{datetime.now():%Y-%m-%d %H:%M:%S} | {reason} | "
+        f"type={d['type']} frame={frame_idx} bbox={[round(v) for v in bbox]}\n"
+    )
+    with open(_LOG_DIR / f"{scan_id}.log", "a", encoding="utf-8") as f:
+        f.write(line)
 
 
 def _filter_duplicate_frames(
@@ -400,6 +444,7 @@ def _dedup_candidates(candidates: list[dict]) -> list[dict]:
 
 
 async def _run_detection(
+    scan_id: int | str,
     video_path: Path,
     depth_dir: Path,
     conf_dir: Path,
@@ -542,13 +587,30 @@ async def _run_detection(
         sy = depth_h / img_h
         K_depth = _scale_camera_matrix(K, sx, sy)
 
-        mask = await asyncio.to_thread(_sam3_segment, _get_jpeg(frame_idx), bbox)
+        mask = await _segment_with_retry(_get_jpeg(frame_idx), bbox)
         if mask is None:
-            logger.warning("[D01] SAM3 세그멘테이션 실패 frame_idx=%s bbox=%s", frame_idx, bbox)
+            logger.warning("[D01] SAM3 세그멘테이션 실패로 제외 frame_idx=%s", frame_idx)
+            _log_dropped(scan_id, "SAM3 실패", d, frame_idx, bbox)
+            continue
+
+        # 면적: RGB 해상도 마스크 픽셀 수 × 마스크 영역 depth 중앙값 기준 픽셀 실면적
+        depth, estimated = _mask_depth_median(mask, depth_map)
+        if depth is None:
+            logger.warning("[D01] 프레임 depth 없음으로 제외 frame_idx=%s", frame_idx)
+            _log_dropped(scan_id, "depth 없음", d, frame_idx, bbox)
+            continue
+        if estimated:
+            logger.info("[D01] 마스크 영역 depth 없음, 프레임 전체 depth로 면적 어림 frame_idx=%s", frame_idx)
+        short_side = _mask_short_side_m(mask, depth, K)
+        if short_side < _MIN_SIDE_M:
+            logger.info("[D01] 짧은 변 %.1fmm로 제외 type=%s frame_idx=%s", short_side * 1000, d["type"], frame_idx)
+            _log_dropped(scan_id, f"짧은 변 {short_side * 1000:.1f}mm", d, frame_idx, bbox)
+            continue
+        area = round(_mask_area_cm2(mask, depth, K), 2)
 
         # region_3d: 마스크에서 단순화 폴리곤을 뽑아 depth 해상도로 스케일 후 역투영
         region_3d: list[Point3D] = []
-        polygon_2d = _mask_to_polygon(mask) if mask is not None else []
+        polygon_2d = _mask_to_polygon(mask)
         if polygon_2d:
             polygon_depth = [(u * sx, v * sy) for u, v in polygon_2d]
             region_3d = polygon_to_3d(polygon_depth, depth_map, K_depth, poses[frame_idx])
@@ -556,16 +618,12 @@ async def _run_detection(
                 logger.warning("[D01] region_3d 비어있음 frame_idx=%s polygon=%d개 depth_nonzero=%d",
                                frame_idx, len(polygon_2d), int(np.count_nonzero(depth_map)))
 
-        # area 실측: 마스크 + depth 기반. 마스크 없으면 0.0
-        area = _mask_area_m2(mask, depth_map, K_depth) if mask is not None else 0.0
-
         # 시각화 2종: 크롭+세그멘테이션(콜백 포함) / 크롭+bbox(S3 백업)
         image_url = None
         try:
             key_base = uuid.uuid4().hex
 
-            seg_src = _draw_seg_overlay(img_arr, mask) if mask is not None else img_arr
-            seg_crop = _crop_around_bbox(seg_src, bbox)
+            seg_crop = _crop_around_bbox(_draw_seg_overlay(img_arr, mask), bbox)
             if seg_crop is not None:
                 _, buf = cv2.imencode(".jpg", seg_crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 image_url = await _upload_with_retry(buf.tobytes(), f"defects/{key_base}.jpg")
@@ -598,6 +656,7 @@ async def _run_detection(
 
 
 async def detect_defects(
+    scan_id: int | str,
     video_path: Path,
     depth_dir: Path,
     conf_dir: Path,
@@ -606,7 +665,7 @@ async def detect_defects(
     frames_per_sec: float = 1.0,
 ) -> list[DefectItem]:
     return await _run_detection(
-        video_path, depth_dir, conf_dir, camera_matrix_path, odometry_path, frames_per_sec
+        scan_id, video_path, depth_dir, conf_dir, camera_matrix_path, odometry_path, frames_per_sec
     )
 
 

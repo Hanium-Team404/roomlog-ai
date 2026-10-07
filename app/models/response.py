@@ -48,8 +48,8 @@ class Point3D(BaseModel):
 class DefectItem(BaseModel):
     type: DefectType = Field(description="하자 유형")
     severity: Severity = Field(description="심각도")
-    location: str = Field(description='위치 (예: "거실 벽")')
-    area: float = Field(description="하자 면적 (㎡)")
+    location: str = Field(description='위치 (예: "벽 하단")')
+    area: float = Field(description="하자 면적 (㎠, 소수점 둘째 자리)")
     description: str = Field(description="하자 상세 설명")
     region_3d: list[Point3D] = Field(description="3D 공간 상 하자 영역 꼭짓점 좌표 (SAM 3 segmentation polygon → depth + camera matrix + odometry 역투영)")
     image_url: Optional[str] = Field(default=None, description="하자 영역 크롭 이미지 URL")
@@ -62,8 +62,8 @@ class DefectDetectionData(BaseModel):
 class ComparisonDefectItem(BaseModel):
     type: DefectType = Field(description="하자 유형")
     severity: Severity = Field(description="심각도")
-    location: str = Field(description='위치 (예: "거실 벽")')
-    area: float = Field(description="하자 면적 (㎡)")
+    location: str = Field(description='위치 (예: "벽 하단")')
+    area: float = Field(description="하자 면적 (㎠, 소수점 둘째 자리)")
     description: str = Field(description="하자 상세 설명")
     region_3d: list[Point3D] = Field(description="3D 공간 상 하자 영역 꼭짓점 좌표 (SAM 3 segmentation polygon → depth + camera matrix + odometry 역투영)")
     image_url: Optional[str] = Field(default=None, description="하자 영역 크롭 이미지 URL")
@@ -71,3 +71,7 @@ class ComparisonDefectItem(BaseModel):
 
 class DefectComparisonData(BaseModel):
     defects: list[ComparisonDefectItem] = Field(description="신규 하자 목록 (퇴거 - 입주)")
+
+
+class DeletionData(BaseModel):
+    deleted: int = Field(description="삭제한 S3 객체 수")
