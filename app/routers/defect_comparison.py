@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def _resolve_defects(
     defects_json: list[DefectItem] | None,
+    scan_id: int,
     scan_url: str | None,
     tmp_path: Path,
     scan_name: str,
@@ -25,6 +26,7 @@ async def _resolve_defects(
         return defects_json
     scan = await asyncio.to_thread(download_scan_zip, scan_url, str(tmp_path / scan_name))
     return await _detect_defects(
+        scan_id=scan_id,
         video_path=scan.video_path,
         depth_dir=scan.depth_dir,
         conf_dir=scan.conf_dir,
@@ -48,8 +50,8 @@ async def _run(body: DefectComparisonRequest) -> None:
                 body.out_defects_json is not None,
             )
             in_defects, out_defects = await asyncio.gather(
-                _resolve_defects(body.in_defects_json, body.in_scan_url, tmp_path, "in_scan"),
-                _resolve_defects(body.out_defects_json, body.out_scan_url, tmp_path, "out_scan"),
+                _resolve_defects(body.in_defects_json, body.in_scan_id, body.in_scan_url, tmp_path, "in_scan"),
+                _resolve_defects(body.out_defects_json, body.out_scan_id, body.out_scan_url, tmp_path, "out_scan"),
             )
 
             logger.info("[D02] 하자 비교 중 in=%d개 out=%d개", len(in_defects), len(out_defects))

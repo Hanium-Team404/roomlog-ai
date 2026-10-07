@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import tempfile
 from pathlib import Path
@@ -27,6 +26,7 @@ async def _run(body: DefectDetectionRequest) -> None:
 
             logger.info("[D01] 하자 탐지 중")
             defects = await _detect_defects(
+                scan_id=body.scan_id,
                 video_path=scan.video_path,
                 depth_dir=scan.depth_dir,
                 conf_dir=scan.conf_dir,
@@ -40,7 +40,7 @@ async def _run(body: DefectDetectionRequest) -> None:
             "message": "요청 성공",
             "data": DefectDetectionData(defects=defects).model_dump(),
         }
-        logger.info("[D01] 콜백 전송 중 defects=%d개\n%s", len(defects), json.dumps(payload, ensure_ascii=False, indent=2))
+        logger.info("[D01] 콜백 전송 중 analysis_id=%s scan_id=%s defects=%d개", body.analysis_id, body.scan_id, len(defects))
         await post_result(body.callback_url, payload)
         logger.info("[D01] 완료 analysis_id=%s", body.analysis_id)
     except Exception as e:
