@@ -18,6 +18,10 @@ class DefectDetectionRequest(BaseModel):
     callback_url: str = Field(description="처리 완료 후 결과를 전달할 콜백 URL")
 
 
+class DefectDeletionRequest(BaseModel):
+    image_urls: list[str] = Field(description="삭제할 하자 이미지 URL 목록 (D01/D02 콜백의 image_url 값 그대로)")
+
+
 class DefectComparisonRequest(BaseModel):
     analysis_id: int = Field(description="백엔드 분석 ID (콜백 시 사용)")
     in_scan_id: int = Field(description="입주 시 스캔 ID")

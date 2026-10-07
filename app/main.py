@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.routers import defect_comparison, defect_detection, reconstruction
+from app.routers import defect_comparison, defect_detection, deletion, reconstruction
 
 _app_logger = logging.getLogger("app")
 _app_logger.setLevel(logging.INFO)
@@ -16,10 +16,10 @@ if not _app_logger.handlers:
     _handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
     _app_logger.addHandler(_handler)
 
-    # R01/D01/D02 API 호출 로그를 날짜별 파일로도 기록 (append, 자정에 파일 교체)
+    # R01/D01/D02 API 호출 로그를 날짜별 파일로도 기록 (append, 자정에 파일 교체, 30일 보관)
     _log_dir = Path(__file__).parent.parent / "logs"
     _log_dir.mkdir(exist_ok=True)
-    _file_handler = TimedRotatingFileHandler(_log_dir / "api.log", when="midnight", encoding="utf-8")
+    _file_handler = TimedRotatingFileHandler(_log_dir / "api.log", when="midnight", backupCount=30, encoding="utf-8")
     _file_handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s:%(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     )
@@ -37,6 +37,10 @@ tags_metadata = [
     {
         "name": "AI-D02. 입주/퇴거 하자 비교",
         "description": "입주/퇴거 ZIP 또는 기존 탐지 결과 JSON을 받아 새로 생긴 하자 반환",
+    },
+    {
+        "name": "AI-X01. 산출물 삭제",
+        "description": "S3에 저장된 3D 재구성 산출물과 하자 이미지 삭제 (회원 탈퇴, 스캔/하자 삭제 시)",
     },
 ]
 
@@ -62,3 +66,4 @@ async def verify_api_key(request: Request, call_next):
 app.include_router(reconstruction.router)
 app.include_router(defect_detection.router)
 app.include_router(defect_comparison.router)
+app.include_router(deletion.router)
