@@ -13,6 +13,7 @@ class ScanFiles(NamedTuple):
     odometry_path: Path
     depth_dir: Path
     conf_dir: Path
+    root: Path  # ZIP을 푼 폴더. keyframes/ 등 확장 파일은 여기서 직접 찾는다
 
 
 def download_scan_zip(url: str, extract_dir: str) -> ScanFiles:
@@ -33,11 +34,13 @@ def download_scan_zip(url: str, extract_dir: str) -> ScanFiles:
         odometry_path=base / "odometry.csv",
         depth_dir=base / "depth",
         conf_dir=base / "confidence",
+        root=base,
     )
 
 
 _CONTENT_TYPES = {
     ".ply": "application/octet-stream",
+    ".usdz": "model/vnd.usdz+zip",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
