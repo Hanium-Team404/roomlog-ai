@@ -21,6 +21,7 @@ from app.core.storage import upload_to_s3
 from app.models.response import ComparisonDefectItem, DefectItem, DefectType, Point3D, Severity
 from app.services.frame_service import extract_frames
 from app.services.pose_service import polygon_to_3d
+from app.services.reconstruction.preprocess import probe_sizes, refine_poses
 
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 os.environ.setdefault("FAL_KEY", settings.fal_api_key)
@@ -110,11 +111,25 @@ _FEWSHOT_CONTENT = _load_fewshot()
 def _build_poses(odometry_path: Path) -> dict[int, np.ndarray]:
     data = np.loadtxt(odometry_path, delimiter=",", skiprows=1)
     poses: dict[int, np.ndarray] = {}
+    stamps: dict[int, float] = {}
     for row in data:
         T = np.eye(4)
         T[:3, :3] = Rotation.from_quat(row[5:]).as_matrix()
         T[:3, 3] = row[2:5]
         poses[int(row[1])] = T
+        stamps[int(row[1])] = float(row[0])
+    if settings.recon_refine_poses:
+        # R01이 메시를 만들 때 쓴 loop closure pose 보정을 똑같이 적용한다. 안 하면 하자 좌표가
+        # 메시와 보정량(수 cm)만큼 어긋난다. 같은 입력에 같은 결정적 계산이라 R01과 결과가 같다.
+        scan = odometry_path.parent
+        depth_frames = {int(f.stem) for f in (scan / "depth").glob("*.png")}
+        common = {f: poses[f] for f in poses if f in depth_frames}
+        if common:
+            K = np.loadtxt(scan / "camera_matrix.csv", delimiter=",")
+            refined, st = refine_poses(common, {f: stamps[f] for f in common}, scan, K, probe_sizes(scan))
+            poses.update(refined)
+            logger.info("[D01] pose 보정 적용 (R01과 동일): loop edge %d, 보정량 평균 %.1fcm",
+                        st["n_loop_edges"], st["correction_mean_cm"])
     return poses
 
 
