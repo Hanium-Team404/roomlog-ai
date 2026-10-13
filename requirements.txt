@@ -10,6 +10,8 @@ opencv-python-headless
 scipy
 numpy
 Pillow
+trimesh
+usd-core
 matplotlib
 scikit-video
 python-multipart

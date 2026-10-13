@@ -9,7 +9,7 @@ LiDAR로 촬영한 방을 3D로 재구성하고, GPT Vision + SAM3으로 하자�
 
 | 기능 | 설명 |
 |------|------|
-| **3D 재구성 (R01)** | LiDAR 원시 데이터(.zip)를 받아 TSDF 기반으로 메시·포인트 클라우드를 생성하고 S3에 저장합니다. 렌더링 프레임과 썸네일도 함께 생성합니다. |
+| **3D 재구성 (R01)** | LiDAR 원시 데이터(.zip)를 받아 pose 보정, TSDF 메시, 원본 키프레임 텍스처링(mvs-texturing)을 거쳐 텍스처 usdz 한 개를 만들어 S3에 저장합니다. 썸네일(4뷰 렌더 + 합성 이미지)도 함께 생성합니다. |
 | **하자 탐지 (D01)** | 스캔 영상에서 프레임을 추출해 GPT Vision으로 하자를 탐지하고, SAM3 세그멘테이션으로 정밀한 마스크를 구합니다. depth map과 odometry를 역투영해 각 하자의 3D 위치를 산출합니다. |
 | **하자 비교 (D02)** | 입주·퇴거 시 두 스캔의 하자 목록을 비교해 새로 생긴 하자만 추출합니다. 3D 무게중심 거리(0.3 m 임계값)로 기존 하자와 신규 하자를 구분합니다. |
 
@@ -26,9 +26,9 @@ POST /reconstruction        POST /defect-detection        POST /defect-compariso
         │                           │                              │
   [BackgroundTask]           [BackgroundTask]               [BackgroundTask]
   ZIP 다운로드                ZIP 다운로드                  ZIP 다운로드 (필요 시)
-  TSDF 재구성                 프레임 추출                    D01 병렬 실행
-  S3 업로드                   GPT Vision 탐지                3D 중심점 비교
-  썸네일 생성                 SAM3 세그멘테이션              신규 하자 추출
+  pose 보정 + TSDF            프레임 추출                    D01 병렬 실행
+  texrecon 텍스처링 → usdz    GPT Vision 탐지                3D 중심점 비교
+  usdz S3 업로드, 썸네일      SAM3 세그멘테이션              신규 하자 추출
         │                   depth → 3D 역투영                      │
         └──────────────────────── callback_url POST ───────────────┘
 ```
@@ -66,7 +66,7 @@ S3 업로드 (bbox 시각화 / 마스크 시각화 / 1:1.6 크롭)
 
 - **언어/프레임워크**: Python 3.11, FastAPI
 - **AI 모델**: OpenAI GPT Vision (하자 탐지), fal.ai SAM3 (세그멘테이션)
-- **3D 재구성**: Open3D (Scalable TSDF Volume), SciPy, NumPy
+- **3D 재구성**: Open3D (Scalable TSDF Volume, ICP pose graph), mvs-texturing(texrecon), trimesh, usd-core, SciPy, NumPy
 - **영상 처리**: OpenCV, Pillow
 - **파일 저장**: AWS S3 호환 (boto3)
 - **컨테이너**: Docker (EGL surfaceless + OSMesa 헤드리스 렌더링)
@@ -78,11 +78,16 @@ S3 업로드 (bbox 시각화 / 마스크 시각화 / 1:1.6 크롭)
 app
 ├── main.py                  — FastAPI 앱 초기화, API Key 미들웨어
 ├── routers
-│   ├── reconstruction.py    — AI-R01. TSDF 3D 재구성 엔드포인트
+│   ├── reconstruction.py    — AI-R01. 3D 재구성(usdz) 엔드포인트
 │   ├── defect_detection.py  — AI-D01. 하자 탐지 엔드포인트
 │   └── defect_comparison.py — AI-D02. 입주/퇴거 하자 비교 엔드포인트
 ├── services
-│   ├── tsdf_service.py      — Open3D TSDF 재구성 로직
+│   ├── reconstruction/      — R01 파이프라인 (preprocess → tsdf → texture → usdz)
+│   │   ├── preprocess.py    — RGB 동기화, depth 필터, loop closure pose 보정, 키프레임 선택
+│   │   ├── tsdf.py          — TSDF 융합, cleanup, 텍스처용 단순화
+│   │   ├── texture.py       — texrecon 씬 구성, 좌표계 검증, 텍스처링
+│   │   ├── usdz.py          — obj → usdz (미관측 면은 TSDF 정점 색으로 굽기)
+│   │   └── pipeline.py      — 단계 연결
 │   ├── vision_service.py    — GPT Vision 탐지 + SAM3 세그멘테이션 + 3D 역투영
 │   ├── frame_service.py     — 영상 프레임 추출
 │   ├── pose_service.py      — 2D 폴리곤 → 3D 좌표 변환 (역투영)
@@ -113,6 +118,11 @@ app
 | `AWS_SECRET_ACCESS_KEY` | AWS 시크릿 키 | 선택 |
 | `API_KEY` | 내부 API 인증 키 (`X-Api-Key` 헤더) | `roomlog-ai-secret-key` |
 | `REDIS_URL` | Redis 연결 URL | `redis://localhost:6379` |
+| `RECON_FRAME_STRIDE` | R01 텍스처 소스 프레임 간격 (작을수록 커버리지↑ 시간·메모리↑) | `9` |
+| `RECON_TARGET_FACES` | R01 텍스처링용 메시 삼각형 수 | `150000` |
+| `RECON_REFINE_POSES` | R01 loop closure pose 보정 (D01 하자 좌표도 같은 보정 사용) | `true` |
+| `RECON_NUM_THREADS` | texrecon 스레드 수 | 전부 |
+| `TEXRECON_BIN` | texrecon 바이너리 경로 | `texrecon` |
 
 ## 🐳 실행
 

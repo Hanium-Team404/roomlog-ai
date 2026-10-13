@@ -13,8 +13,8 @@ from app.core.callback import post_reconstruction_result, post_thumbnail_result
 from app.core.storage import download_scan_zip, upload_file_to_s3, upload_to_s3
 from app.models.request import ReconstructionRequest
 from app.models.response import APIResponse, ErrorResponse
+from app.services.reconstruction import run_reconstruction
 from app.services.thumbnail_service import generate_thumbnail, get_render_frames
-from app.services.tsdf_service import run_reconstruction
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["AI-R01. 3D 재구성"])
@@ -39,33 +39,23 @@ async def _run(body: ReconstructionRequest) -> None:
             logger.info("[R01] ZIP 다운로드 중")
             scan = await asyncio.to_thread(download_scan_zip, body.scan_url, str(tmp_path / "scan"))
 
-            logger.info("[R01] 재구성 처리 중")
-            pcd_path, mesh_path = await asyncio.to_thread(
-                run_reconstruction,
-                scan.video_path,
-                scan.depth_dir,
-                scan.conf_dir,
-                scan.camera_matrix_path,
-                scan.odometry_path,
-                tmp_path / "output",
-            )
+            logger.info("[R01] 재구성 처리 중 (전처리, TSDF, 텍스처링, usdz)")
+            result = await asyncio.to_thread(run_reconstruction, scan.root, tmp_path / "work")
 
+            # S3에는 최종 usdz 하나만 올린다. 메시(ply)는 썸네일 렌더에만 쓰고 업로드하지 않는다
             logger.info("[R01] S3 업로드 중")
             prefix = f"scans/{body.scan_id}/{uuid.uuid4().hex}"
-            _, mesh_url = await asyncio.gather(
-                asyncio.to_thread(upload_file_to_s3, pcd_path, f"{prefix}/point_cloud.ply"),
-                asyncio.to_thread(upload_file_to_s3, mesh_path, f"{prefix}/mesh.ply"),
-            )
+            usdz_url = await asyncio.to_thread(upload_file_to_s3, result.usdz_path, f"{prefix}/room.usdz")
 
-            # 1차 콜백: mesh 완료 즉시 전송 — 썸네일 생성을 기다리지 않는다
-            logger.info("[R01] 1차 콜백 전송 중 mesh_url=%s", mesh_url)
-            await post_reconstruction_result(body.callback_url, body.scan_id, mesh_url)
-            logger.info("[R01] mesh 완료 scan_id=%s", body.scan_id)
+            # 1차 콜백: usdz 완료 즉시 전송 — 썸네일 생성을 기다리지 않는다
+            logger.info("[R01] 1차 콜백 전송 중 usdz_url=%s", usdz_url)
+            await post_reconstruction_result(body.callback_url, body.scan_id, usdz_url)
+            logger.info("[R01] usdz 완료 scan_id=%s stats=%s", body.scan_id, result.stats)
 
-            # 썸네일은 1차 콜백 이후 진행 — 실패해도 mesh 결과에는 영향 없음
+            # 썸네일은 1차 콜백 이후 진행 — 실패해도 usdz 결과에는 영향 없음
             try:
                 logger.info("[R01] 썸네일 생성 중")
-                frames = await asyncio.to_thread(get_render_frames, mesh_path)
+                frames = await asyncio.to_thread(get_render_frames, result.mesh_path)
                 await asyncio.gather(*[
                     asyncio.to_thread(upload_to_s3, frame, f"{prefix}/view_{i}.png")
                     for i, frame in enumerate(frames)
