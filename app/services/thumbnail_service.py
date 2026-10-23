@@ -161,10 +161,10 @@ def get_render_frames(mesh_path: Path) -> list[bytes]:
 
 
 async def generate_thumbnail(frames: list[bytes]) -> bytes:
-    logger.info("[Thumbnail] gpt-image-1 생성 요청 (frames=%d)", len(frames))
+    logger.info("[Thumbnail] gpt-image-2.5-flare 생성 요청 (frames=%d)", len(frames))
 
     response = await _openai.images.edit(
-        model="gpt-image-1",
+        model="gpt-image-2.5-flare",
         image=[
             (f"view_{i}.png", frame, "image/png")
             for i, frame in enumerate(frames)
